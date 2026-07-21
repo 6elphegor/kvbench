@@ -54,7 +54,7 @@ rapidly (diffuse), Cubed approaches 1 (spikes), but Squared remains stable betwe
 This figure is produced by `softmax_weighted_sum_cubed.py` (`python
 softmax_weighted_sum_cubed.py`).
 
-I cannot claim complete credit for quadratic attention as I encountered it in an
+I cannot claim complete credit for squared-logit attention as I encountered it in an
 article linked in an X post. However, this attention correction on its own is only
 part of the solution to context length generalization. Without correctly handling
 the position embeddings, models still will not generalize to context lengths longer
