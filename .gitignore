@@ -2,3 +2,13 @@ __pycache__/
 runs/
 *.pt
 *.log
+.DS_Store
+
+# LaTeX build artifacts (paper/main.pdf is committed; intermediates are not)
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.out
+paper/arxiv-upload.tar.gz

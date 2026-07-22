@@ -20,4 +20,4 @@ StartKey 6 6 6 StartValue 7 1 4  ...  StartKey 6 6 6 StartValue 7 1 4
 ```
 
 **Training:** `n = 8` unique keys → 16 entries (128 tokens).
-**Evaluation:** up to `n = 128` unique keys → 256 entries (2048 tokens).
+**Evaluation:** up to `n = 256` unique keys → 512 entries (4096 tokens).
