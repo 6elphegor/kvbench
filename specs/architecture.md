@@ -20,6 +20,8 @@ Variants differ **only** in their attention layers:
   encoding: `1.0` (full RoPE), `0.5` (partial), `0.0` (NoPE, position-free).
 - **Sliding window** — local attention window `W`, or `None` for full attention.
 - **Squared scores** — `softmax(scores²)` instead of `softmax(scores)`.
+- **Accumulated scores** — `softmax(cumsum(scores²))` along the key axis: each
+  key's squared score also carries the squared scores of all keys before it.
 
 ## The eight variants
 

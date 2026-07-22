@@ -11,13 +11,10 @@ import os
 import matplotlib as mpl
 mpl.use("Agg")
 import matplotlib.pyplot as plt
-import torch
 from matplotlib.lines import Line2D
 from matplotlib.ticker import NullFormatter, NullLocator, ScalarFormatter
 
 from . import config as C
-from .evaluate import accuracy_vs_context
-from .model import Model, VARIANTS
 
 # palette
 SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
@@ -50,6 +47,8 @@ def _titles(fig, main, sub, foot):
 
 
 def _load(runs_dir, name):
+    import torch
+    from .model import Model, VARIANTS
     ck = torch.load(os.path.join(runs_dir, name, "checkpoints", f"ckpt_step{C.STEPS}.pt"),
                     map_location=C.DEVICE)
     m = Model(VARIANTS[name]).to(C.DEVICE)
@@ -70,10 +69,15 @@ def accuracy_curves(runs_dir, recompute=False):
             print("using cached curves:", cache)
             return data["curves"]
     print("computing accuracy vs context (this is the slow part)...")
+    from .evaluate import accuracy_vs_context
     curves = {name: accuracy_vs_context(_load(runs_dir, name), N_SWEEP) for name in names}
     json.dump({"n_sweep": N_SWEEP, "curves": curves}, open(cache, "w"), indent=2)
     print("cached curves:", cache)
     return curves
+
+
+def _pct(x):
+    return f"{round(100 * x, 1):g}%"
 
 
 def fig_generalization(runs_dir, out_path, recompute=False):
@@ -101,7 +105,10 @@ def fig_generalization(runs_dir, out_path, recompute=False):
     ax.set_yticklabels(["0", "25", "50", "75", "100%"])
     ax.set_xlabel("context length — unique keys  n   (32× the training length at n=256)")
     ax.set_ylabel("value retrieval accuracy  (exact match, all 3 digits)")
-    ax.annotate("squared hybrid holds ~99% to 32×;\nplain hybrid softens to ~93% at n=256",
+    n_max = N_SWEEP[-1]
+    sq, pl = min(curves["hybrid_square"]), curves["hybrid"][-1]
+    ax.annotate(f"squared hybrid holds ~{_pct(sq)} to {n_max // C.N_TRAIN_KEYS}×;\n"
+                f"plain hybrid softens to ~{_pct(pl)} at n={n_max}",
                 xy=(250, 0.935), xytext=(112, 0.76),
                 fontsize=9.5, color=INK2, ha="left", arrowprops=dict(arrowstyle="-", color=MUTED, lw=1))
     ax.text(20, 0.10, "standard RoPE, partial-RoPE, and\nwindow-free hybrids collapse to 0",
@@ -114,7 +121,7 @@ def fig_generalization(runs_dir, out_path, recompute=False):
     _titles(fig, "Only local-window + global-NoPE hybrids generalize to longer contexts",
             "Key–value retrieval: accuracy on the 2nd occurrence of each key, vs context length. "
             "Trained at n=8; evaluated to n=256.",
-            "8 variants · d=128 · 8 blocks · 5k steps · exact-match over 3 value digits · 128 seqs/point")
+            "8 variants · d=128 · 8 blocks · 15k steps · exact-match over 3 value digits · 128 seqs/point")
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
     print("saved", out_path)

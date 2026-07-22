@@ -29,9 +29,13 @@ ROPE_THETA = 10000.0
 
 # ---- training ----
 BATCH = 64
-STEPS = 5000
+STEPS = 15000
 WARMUP = 500
-LR = 3e-4
+LR = 3e-4                       # cosine-decayed to ~0 after warmup
+# context-length curriculum: (until_step, n_keys) stages, then N_TRAIN_KEYS.
+# Starting at n=2 keys lets the content-match circuit form before any positional
+# shortcut exists; without it, every full-attention RoPE variant plateaus ~37%.
+CURRICULUM = ((750, 2), (1500, 4), (2500, 6))
 BETAS = (0.9, 0.999)
 WEIGHT_DECAY = 0.1
 EPS = 1e-8

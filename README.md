@@ -63,8 +63,8 @@ than what is encountered during training.
 ## The result
 
 **Only the hybrid variants with a sliding window generalize.** The best,
-`hybrid_square`, holds ~99% exact-match retrieval all the way out to n=256 (32× the
-training length); the plain `hybrid` decays slowly, from ~100% to ~93% over the same
+`hybrid_square`, holds ~99.9% exact-match retrieval all the way out to n=256 (32× the
+training length); the plain `hybrid` decays slowly, from ~100% to ~94% over the same
 range. Every other variant — plain RoPE, partial RoPE, and the window-free hybrids —
 collapses to ~0 as the context grows. The sliding window is essential:
 `hybrid_nowindow` is no better than plain RoPE. The mechanism is what you'd expect:
@@ -80,16 +80,26 @@ positions.
 ## Running it
 
 ```bash
-# train all 8 variants and render both figures
-python -m kvbench --compile
+# train the 8 variants: seed 0 everywhere, except the plain hybrid which
+# needs seed 1 (with seed 0 it plateaus on a partial positional shortcut)
+python -m kvbench.train --compile --exclude hybrid
+python -m kvbench.train --compile --only hybrid --seed 1
 
-# or step by step
-python -m kvbench.train --compile          # writes runs/<variant>/{metrics.jsonl,eval.json,checkpoints}
-python -m kvbench.plots                     # writes figures/*.png
+# render both figures (recomputes the accuracy-vs-context eval)
+python -m kvbench.plots --recompute        # writes figures/*.png
 ```
 
+Each run writes `runs/<variant>/{metrics.jsonl,eval.json,checkpoints}`.
 Requires `torch` and `matplotlib`, a CUDA GPU (set `DEVICE` in `kvbench/config.py`
-otherwise). All 8 variants take ~1 hour on a single consumer GPU.
+otherwise). ~7 min per variant (15k steps) on a single consumer GPU.
+
+Training uses a short context-length curriculum (n = 2 → 4 → 6 → 8 keys over the
+first 2500 steps) with cosine LR decay. This matters: trained at n = 8 from the
+start, every variant whose RoPE layers see full attention gets stuck on a
+positional-shortcut local optimum and plateaus at ~37% retrieval *in
+distribution*; started at n = 2, where no positional shortcut exists, the
+content-match circuit forms first and every variant reaches ≈100% at the
+training length. See `specs/training.md`.
 
 ## Layout
 
