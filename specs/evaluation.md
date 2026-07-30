@@ -5,7 +5,7 @@ lookups).
 
 ## Context-length generalization (headline)
 
-Exact-match retrieval accuracy — all `v` value digits correct — on second
+Exact-match retrieval accuracy (all `v` value digits correct) on second
 occurrences, measured at a sweep of context lengths
 `n ∈ {8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 192, 256}` unique keys. Trained
 at n=8, so n=256 is 32× the training length. The RoPE/mask buffers are re-precomputed per context

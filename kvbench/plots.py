@@ -19,8 +19,10 @@ from . import config as C
 # palette
 SURF, INK, INK2, MUTED = "#fcfcfb", "#0b0b0b", "#52514e", "#898781"
 GRID, AXIS, BLUE, AQUA = "#e1e0d9", "#c3c2b7", "#2a78d6", "#1baf7a"
+AMBER = "#d97706"
 WINNERS = {"hybrid_square": (BLUE, "hybrid · square + window"),
            "hybrid": (AQUA, "hybrid · window")}
+EXTRAS = {"hybrid_square_kda": (AMBER, "hybrid · square + KDA")}
 BASELINES = ["rope", "rope_square", "partial_rope", "partial_rope_square",
              "hybrid_nowindow", "hybrid_square_nowindow"]
 N_SWEEP = [8, 12, 16, 24, 32, 48, 64, 96, 128, 160, 192, 256]
@@ -61,7 +63,7 @@ def accuracy_curves(runs_dir, recompute=False):
     """Retrieval accuracy vs context length for every variant, cached to
     runs/accuracy_vs_context.json so re-plotting doesn't re-run the eval.
     The cache is invalidated automatically when N_SWEEP changes."""
-    names = list(WINNERS) + BASELINES
+    names = list(WINNERS) + list(EXTRAS) + BASELINES
     cache = os.path.join(runs_dir, "accuracy_vs_context.json")
     if not recompute and os.path.exists(cache):
         data = json.load(open(cache))
@@ -89,6 +91,9 @@ def fig_generalization(runs_dir, out_path, recompute=False):
     ax.grid(axis="x", color=GRID, linewidth=0.8, alpha=0.5)
     for name in BASELINES:
         ax.plot(N_SWEEP, curves[name], color=MUTED, alpha=0.5, lw=1.3, zorder=2)
+    for name, (col, lab) in EXTRAS.items():
+        ax.plot(N_SWEEP, curves[name], color=col, lw=2.4, marker="o", ms=5.5,
+                mfc=col, mec=SURF, mew=1.4, zorder=4)
     for name, (col, lab) in WINNERS.items():
         ax.plot(N_SWEEP, curves[name], color=col, lw=2.7, marker="o", ms=6.5,
                 mfc=col, mec=SURF, mew=1.4, zorder=5)
@@ -103,25 +108,31 @@ def fig_generalization(runs_dir, out_path, recompute=False):
     ax.set_ylim(-0.03, 1.06)
     ax.set_yticks([0, .25, .5, .75, 1.0])
     ax.set_yticklabels(["0", "25", "50", "75", "100%"])
-    ax.set_xlabel("context length — unique keys  n   (32× the training length at n=256)")
+    ax.set_xlabel("context length in unique keys  n   (32× the training length at n=256)")
     ax.set_ylabel("value retrieval accuracy  (exact match, all 3 digits)")
     n_max = N_SWEEP[-1]
     sq, pl = min(curves["hybrid_square"]), curves["hybrid"][-1]
     ax.annotate(f"squared hybrid holds ~{_pct(sq)} to {n_max // C.N_TRAIN_KEYS}×;\n"
                 f"plain hybrid softens to ~{_pct(pl)} at n={n_max}",
-                xy=(250, 0.935), xytext=(112, 0.76),
+                xy=(250, 0.935), xytext=(30, 0.83),
+                fontsize=9.5, color=INK2, ha="left", arrowprops=dict(arrowstyle="-", color=MUTED, lw=1))
+    kda = curves["hybrid_square_kda"]
+    ax.annotate(f"KDA in place of the window: no collapse,\nbut fades to ~{_pct(kda[-1])} at n={n_max}",
+                xy=(192, kda[-2]), xytext=(100, 0.57),
                 fontsize=9.5, color=INK2, ha="left", arrowprops=dict(arrowstyle="-", color=MUTED, lw=1))
     ax.text(20, 0.10, "standard RoPE, partial-RoPE, and\nwindow-free hybrids collapse to 0",
             color=MUTED, fontsize=9.5, ha="left")
     handles = [Line2D([], [], color=c, lw=2.7, marker="o", ms=6.5, mfc=c, mec=SURF, mew=1.4, label=l)
                for _, (c, l) in WINNERS.items()]
+    handles += [Line2D([], [], color=c, lw=2.4, marker="o", ms=5.5, mfc=c, mec=SURF, mew=1.4, label=l)
+                for _, (c, l) in EXTRAS.items()]
     handles.append(Line2D([], [], color=MUTED, alpha=0.6, lw=1.3, label="6 baseline variants"))
     ax.legend(handles=handles, loc="center left", bbox_to_anchor=(0.02, 0.52),
               frameon=False, fontsize=9.5, labelcolor=INK2, handlelength=1.8)
-    _titles(fig, "Only local-window + global-NoPE hybrids generalize to longer contexts",
+    _titles(fig, "Only local-window + global-NoPE hybrids fully generalize to longer contexts",
             "Key–value retrieval: accuracy on the 2nd occurrence of each key, vs context length. "
             "Trained at n=8; evaluated to n=256.",
-            "8 variants · d=128 · 8 blocks · 15k steps · exact-match over 3 value digits · 128 seqs/point")
+            "9 variants · d=128 · 8 blocks · 15k steps · exact-match over 3 value digits · 128 seqs/point")
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
     print("saved", out_path)
@@ -138,6 +149,8 @@ def fig_per_index_ce(runs_dir, out_path):
     x = list(range(1, C.EVAL_ENTRIES + 1))
     for name in BASELINES:
         ax.plot(x, per_index(name), color=MUTED, alpha=0.5, lw=1.3, zorder=2)
+    for name, (col, lab) in EXTRAS.items():
+        ax.plot(x, per_index(name), color=col, lw=2.1, zorder=4)
     for name, (col, lab) in WINNERS.items():
         ax.plot(x, per_index(name), color=col, lw=2.4, zorder=5)
     ax.set_xlim(1, 100)
@@ -149,16 +162,17 @@ def fig_per_index_ce(runs_dir, out_path):
     ax.annotate("hybrids drive CE → 0 as keys\nrepeat deeper into the context", xy=(78, 1.55),
                 xytext=(12, 0.7), fontsize=9.5, color=INK2, ha="left",
                 arrowprops=dict(arrowstyle="-", color=MUTED, lw=1))
-    ax.text(20, 8.75, "baselines stay high everywhere — no retrieval at this context length",
+    ax.text(20, 8.75, "baselines stay high everywhere: no retrieval at this context length",
             color=MUTED, fontsize=9.5, ha="left", va="top")
     handles = [Line2D([], [], color=c, lw=2.4, label=l) for _, (c, l) in WINNERS.items()]
+    handles += [Line2D([], [], color=c, lw=2.1, label=l) for _, (c, l) in EXTRAS.items()]
     handles.append(Line2D([], [], color=MUTED, alpha=0.6, lw=1.3, label="6 baseline variants"))
     ax.legend(handles=handles, loc="center right", bbox_to_anchor=(0.98, 0.62),
               frameon=False, fontsize=9.5, labelcolor=INK2, handlelength=1.8)
     _titles(fig, "Inside a 100-key context, only hybrids resolve the values",
             "Cross-entropy at each value position of a single 100-entry evaluation sequence "
             "(mean over sequences).",
-            "same 8 variants · 100-entry eval · early positions are unseen keys (nothing to retrieve yet)")
+            "same 9 variants · 100-entry eval · early positions are unseen keys (nothing to retrieve yet)")
     fig.savefig(out_path, dpi=220)
     plt.close(fig)
     print("saved", out_path)

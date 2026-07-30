@@ -10,9 +10,8 @@
 \usepackage[colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue]{hyperref}
 \usepackage{newtxtext,newtxmath}
 
-\title{Train Short, Retrieve Long: Interleaved Local-RoPE / Global-NoPE
-Attention with Squared Logits Generalizes Key--Value Retrieval to
-$32\times$ the Training Context}
+\title{Taking Attention Out of Context: Windowed RoPE, NoPE Retrieval,
+and Squared Logits for $32\times$ Length Generalization}
 
 \author{Lucina\\
 \texttt{ritualistic.invocation@gmail.com}\\
@@ -41,7 +40,12 @@ $\sim$99.9\% out to 256 keys (4{,}096 tokens, $32\times$ the training
 length), while full-RoPE, partial-RoPE, and window-free interleaved
 variants all collapse toward zero. The sliding window on RoPE layers is
 necessary, not incidental: without it the interleaved variant fails like
-plain RoPE. A simple variance analysis explains the exponent: for Gaussian
+plain RoPE. A ninth variant replaces the windowed-RoPE layers with Kimi
+Delta Attention (KDA), the gated delta-rule linear attention used in Kimi
+K3: it is the only variant without a sliding window that avoids collapse,
+yet its learned fading memory degrades smoothly to $\sim$75\% at
+$32\times$, suggesting that the window's \emph{exact} locality, not
+locality per se, underwrites flat generalization. A simple variance analysis explains the exponent: for Gaussian
 logits, $p=2$ is the unique power for which $e^{s^p}$ has a regularly
 varying tail, so softmax weights neither diffuse (as for $p<2$) nor
 collapse onto a single token (as for $p>2$) as context grows. We also
@@ -81,7 +85,10 @@ backbone and differ \emph{only} in their attention layers
 (Section~\ref{sec:variants}): the positional axis crosses full RoPE,
 partial RoPE, and interleaved local-RoPE\,/\,global-NoPE layers (with and
 without a sliding window on the RoPE layers); the sharpening axis toggles
-squaring of attention logits before the softmax.
+squaring of attention logits before the softmax. A ninth variant,
+described in Section~\ref{sec:variants}, replaces the windowed-RoPE
+layers with Kimi Delta Attention to test whether a \emph{learned} fading
+local memory can substitute for the window's structural one.
 
 \paragraph{Findings.}
 \begin{enumerate}
@@ -103,6 +110,14 @@ squaring of attention logits before the softmax.
   (Section~\ref{sec:square}). Empirically, squared logits turn the
   interleaved variant's slow decay into flat $\sim$99.9\% retrieval, but
   do not rescue any variant whose positional scheme is broken.
+  \item \textbf{A learned fading memory (KDA) avoids collapse but not
+  decay.} Replacing the windowed-RoPE layers of the winning variant with
+  Kimi Delta Attention \citep{kimiteam2025linear,kimiteam2026k3} yields
+  the only non-windowed variant that does not collapse: retrieval is
+  perfect to $3\times$ the training length and still $\sim$75\% at
+  $32\times$, but it does not match the window it replaced. Exact,
+  structural locality appears to be what converts graceful degradation
+  into flat generalization (Section~\ref{sec:results}).
   \item \textbf{Optimization details decide which basin is reached.}
   Trained directly at 8 keys, every variant whose RoPE layers see full
   attention lands on a positional-shortcut local optimum and plateaus at
@@ -152,7 +167,7 @@ than memorize, since values are random per sequence. Mechanistically, the
 minimal solution is an induction-style circuit \citep{olsson2022context}
 keyed on 3-token key matches.
 
-\section{Eight attention variants, one backbone}
+\section{Nine attention variants, one backbone}
 \label{sec:variants}
 
 All variants share a standard decoder-only backbone: token embedding,
@@ -188,11 +203,15 @@ variant & attention layers & squared logits \\
 \texttt{partial\_rope} / \texttt{partial\_rope\_square} & half-RoPE, full attention, every layer & no / yes \\
 \texttt{hybrid} / \texttt{hybrid\_square} & alternating [RoPE, window $W{=}10$] and [NoPE, full] & no / yes \\
 \texttt{hybrid\_nowindow} / \texttt{hybrid\_square\_nowindow} & alternating [RoPE, full] and [NoPE, full] & no / yes \\
+\texttt{hybrid\_square\_kda} & alternating [KDA] and [NoPE, full] & NoPE layers \\
 \bottomrule
 \end{tabular}
 \caption{The variant grid. ``Alternating'' interleaves the two attention
 types across the 8 attention layers (4 of each). All variants share the
-identical backbone and training recipe.}
+identical backbone and training recipe. The ninth variant replaces the
+windowed-RoPE layers of \texttt{hybrid\_square} with Kimi Delta
+Attention; KDA has no softmax, so squared logits apply only to its NoPE
+layers.}
 \label{tab:variants}
 \end{table}
 
@@ -203,6 +222,37 @@ while RoPE is confined to relative distances $<W$ that never leave the
 training distribution no matter how long the context grows. The
 \texttt{nowindow} ablation removes only the sliding window, testing
 whether interleaving NoPE layers alone suffices.
+
+\paragraph{A ninth variant: Kimi Delta Attention in place of the window.}
+Motivated by production hybrids that interleave linear-attention layers
+with periodic position-free global attention
+\citep{kimiteam2025linear,kimiteam2026k3}, \texttt{hybrid\_square\_kda}
+keeps the winning \texttt{hybrid\_square} layout but replaces each
+windowed-RoPE layer with Kimi Delta Attention (KDA): a delta-rule fast
+weight memory \citep{schlag2021linear,yang2024gated} with a
+\emph{channel-wise} forget gate. Each head maintains a recurrent state
+$S_t \in \mathbb{R}^{d_k \times d_v}$ updated as
+\begin{equation}
+S_t = \bigl(I - \beta_t k_t k_t^{\top}\bigr)\,\mathrm{Diag}(a_t)\,S_{t-1}
+      + \beta_t k_t v_t^{\top},
+\qquad o_t = S_t^{\top} q_t,
+\end{equation}
+with per-channel retention $a_t \in (0,1)^{d_k}$, write strength
+$\beta_t = \sigma(w_\beta^{\top} x_t)$, a short causal convolution and
+SiLU on $q/k/v$, $\ell_2$-normalized $q$ and $k$, and a per-head RMSNorm
+with sigmoid output gate. We follow the Kimi K3 parameterization
+\citep{kimiteam2026k3} exactly, including its two changes over Kimi
+Linear: the log-decay is lower-bounded by a scaled sigmoid,
+$g_t = g_{\min}\,\sigma(e^{A_h} z_t)$ with $g_{\min} = -5$, and the
+output gate is full-rank. The layer is computed with the chunkwise
+WY-form parallel scan of \citet{kimiteam2025linear}, verified against
+the naive per-token recurrence to $\sim$$10^{-12}$ in double precision.
+Like the sliding window, KDA is a fading local memory with no
+length-dependent parameters (no positional encoding, no attention mask);
+unlike the window, its locality is \emph{learned and approximate} rather
+than structural and exact. The global NoPE layers keep squared logits
+(KDA itself has no softmax to square), and the parameter count
+($\sim$2.19M) matches the grid.
 
 \section{Why squared logits, and why the exponent must be 2}
 \label{sec:square}
@@ -312,7 +362,9 @@ occurrences versus context length $n$ (unique keys), 128 sequences per
 point. All variants are trained at $n=8$ (dashed line) and reach
 $\approx$100\% there. Only the windowed interleaved variants generalize:
 \texttt{hybrid\_square} holds $\sim$99.9\% to $n=256$ ($32\times$
-training length); plain \texttt{hybrid} declines to $\sim$94.2\%. All six other variants (full RoPE, partial RoPE, and the window-free hybrids, with or without squared logits) collapse toward zero.}
+training length); plain \texttt{hybrid} declines to $\sim$94.2\%. The
+KDA variant \texttt{hybrid\_square\_kda} avoids collapse but fades to
+$\sim$75\% at $n=256$. All six remaining variants (full RoPE, partial RoPE, and the window-free hybrids, with or without squared logits) collapse toward zero.}
 \label{fig:generalization}
 \end{figure}
 
@@ -324,13 +376,13 @@ training length); plain \texttt{hybrid} declines to $\sim$94.2\%. All six other 
 length). Early entries are mostly first occurrences (nothing to
 retrieve), so all models sit above chance ($\ln 10 \approx 2.30$,
 dotted); as the sequence progresses, an increasing fraction of entries
-are second occurrences. Both windowed hybrids drive CE toward 0 deep into
-the context; the six baselines never descend below chance at any position: they perform no retrieval at all at this length.}
+are second occurrences. Both windowed hybrids and the KDA hybrid drive
+CE toward 0 deep into the context; the six baselines never descend below chance at any position: they perform no retrieval at all at this length.}
 \label{fig:perindex}
 \end{figure}
 
 \paragraph{In distribution, everything works.} With the curriculum, all
-eight variants reach $\approx$99--100\% exact-match retrieval at the
+nine variants reach $\approx$99--100\% exact-match retrieval at the
 training length $n=8$. Whatever separates the variants, it is not the
 ability to learn the task.
 
@@ -349,6 +401,25 @@ RoPE: interleaving NoPE layers is not enough. If even alternate layers
 apply RoPE over unbounded distances, the stack inherits RoPE's failure;
 the sliding window is what keeps every rotary comparison inside the
 training distribution.
+
+\paragraph{KDA: no collapse, graceful fade.} The ninth variant sits in a
+class of its own. \texttt{hybrid\_square\_kda} is the only variant
+without a sliding window that does not collapse: retrieval is perfect
+through $n=24$, $\sim$99.8\% at $n=32$, then fades smoothly: 97.8\% at
+$n=64$, 90.1\% at $n=128$, 75.0\% at $n=256$. Its per-position
+cross-entropy at the 100-entry evaluation length is indistinguishable
+from the windowed hybrids' (Figure~\ref{fig:perindex}), so the shortfall
+is purely a long-context effect, not weaker retrieval. The comparison
+localizes what the window contributes: a $W=10$ window computes the
+\emph{identical} function at every context length, whereas KDA is only
+approximately local. Its decay gates are trained on 128-token sequences,
+and whatever state survives longer horizons than training presents is a
+distribution shift the downstream NoPE retrieval layers never saw; its
+fixed-size state must also compress an ever-longer past. The result
+supports a refinement of our main claim: a fading local memory
+interleaved with NoPE globals suffices to \emph{avoid collapse}, but the
+window's exact, structural locality is what converts graceful
+degradation into flat generalization.
 
 \paragraph{Per-position behavior (Figure~\ref{fig:perindex}).} Within a
 100-entry sequence ($12.5\times$ training length), both windowed hybrids
@@ -383,6 +454,19 @@ and our ablations isolate \emph{which} ingredient carries the
 generalization (the window on rotary layers, with NoPE globals doing the
 lookup) at a scale where every alternative can be trained and compared
 exactly.
+
+\textbf{Linear attention and delta rules.} Delta-rule fast weight
+programmers \citep{schlag2021linear} replace softmax attention with a
+recurrent associative memory; Gated DeltaNet \citep{yang2024gated} adds
+a per-head forget gate, and Kimi Delta Attention
+\citep{kimiteam2025linear} refines the gate to be channel-wise. Kimi
+Linear and Kimi K3 \citep{kimiteam2026k3} interleave KDA with NoPE
+global attention (3:1 with gated MLA in K3): structurally the same
+recipe as our windowed hybrid, with the window replaced by a learned
+fading memory. Our controlled substitution (Section~\ref{sec:results})
+shows the two are not equivalent under train-short/test-long: KDA
+preserves the non-collapse property of the recipe but trades the
+window's exact length-invariance for smooth degradation.
 
 \textbf{Attention dispersion and sharpening.}
 \citet{velickovic2024softmax} prove softmax attention must disperse as
@@ -420,7 +504,12 @@ information. (iv) The variance analysis of Section~\ref{sec:square}
 assumes i.i.d.\ Gaussian logits independent of values, a caricature of trained attention; we offer it as an explanation of the observed
 stability, not a theorem about trained networks. (v) Squared logits make
 attention sign-symmetric, and their interaction with language modeling
-objectives (as opposed to pure retrieval) is unexplored here.
+objectives (as opposed to pure retrieval) is unexplored here. (vi) The
+KDA comparison inherits these caveats and adds its own: it is a single
+run at head dimension 32 (K3 uses 128), we did not tune $g_{\min}$, the
+KDA:global ratio (1:1 here versus K3's 3:1), or the training length its
+decay gates adapt to, and any of these could narrow the gap to the
+window.
 
 \section{Conclusion}
 
@@ -433,7 +522,10 @@ the training length, while every ablation of the positional recipe
 collapses to zero. The window is load-bearing, sharpening is a
 second-order stabilizer with a principled critical exponent, and a
 context-length curriculum decides whether full-attention RoPE models
-learn retrieval at all. We release the benchmark, all specs, and training
+learn retrieval at all. A ninth variant substituting Kimi K3's delta-rule
+linear attention for the sliding window shows the recipe's local
+component can be learned rather than structural, at the price of smooth
+degradation ($\sim$75\% at $32\times$) in place of flat generalization. We release the benchmark, all specs, and training
 code at \href{https://github.com/6elphegor/kvbench}{\texttt{github.com/6elphegor/kvbench}};
 each variant trains in minutes on one consumer GPU, making this an easy
 substrate for testing further attention designs.

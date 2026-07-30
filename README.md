@@ -1,7 +1,7 @@
 # Key–Value Retrieval: Context-Length Generalization
 
 Which attention design lets a small transformer **retrieve a stored value from a
-context far longer than it was trained on?** This benchmark trains 8 architecture
+context far longer than it was trained on?** This benchmark trains 9 architecture
 variants on a synthetic key-value lookup task and measures how retrieval accuracy
 holds up as the context grows to 32× the training length.
 
@@ -9,7 +9,7 @@ holds up as the context grows to 32× the training length.
 
 Each sequence is a list of entries `StartKey <k digits> StartValue <v digits>`.
 Every key appears **exactly twice with the same value**; the entries are shuffled.
-The model is trained to predict the value on the **second** occurrence of a key —
+The model is trained to predict the value on the **second** occurrence of a key:
 a pure in-context lookup. The first occurrence is unpredictable and excluded from
 the loss.
 
@@ -27,10 +27,20 @@ layers (~2.1M params). They differ only in the attention layers:
 
 | variant | positional encoding | window | squared scores |
 |---|---|---|---|
-| `rope` / `rope_square` | full RoPE, every layer | — | no / yes |
-| `partial_rope` / `partial_rope_square` | RoPE on half of each head's dims | — | no / yes |
+| `rope` / `rope_square` | full RoPE, every layer | none | no / yes |
+| `partial_rope` / `partial_rope_square` | RoPE on half of each head's dims | none | no / yes |
 | `hybrid` / `hybrid_square` | alternating local-RoPE / global-NoPE | W=10 | no / yes |
 | `hybrid_nowindow` / `hybrid_square_nowindow` | alternating local-RoPE / global-NoPE | none | no / yes |
+| `hybrid_square_kda` | alternating KDA / global-NoPE | none | yes (NoPE layers) |
+
+`hybrid_square_kda` is the winning `hybrid_square` layout with the local RoPE
+window layers replaced by **Kimi Delta Attention** as used in Kimi K3
+(introduced in [Kimi Linear, arXiv:2510.26692](https://arxiv.org/abs/2510.26692);
+K3 tech report §2.1.1, including K3's lower-bounded decay and full-rank output
+gate): a gated DeltaNet with per-channel decay, implemented with the
+chunkwise-parallel scan. Like a sliding window, KDA is a fading local
+memory with no length-dependent state, but learned, content-addressed, and
+softmax-free.
 
 ## Why squared attention scores
 
@@ -65,13 +75,21 @@ than what is encountered during training.
 **Only the hybrid variants with a sliding window generalize.** The best,
 `hybrid_square`, holds ~99.9% exact-match retrieval all the way out to n=256 (32× the
 training length); the plain `hybrid` decays slowly, from ~100% to ~94% over the same
-range. Every other variant — plain RoPE, partial RoPE, and the window-free hybrids —
+range. Every other variant (plain RoPE, partial RoPE, and the window-free hybrids)
 collapses to ~0 as the context grows. The sliding window is essential:
 `hybrid_nowindow` is no better than plain RoPE. The mechanism is what you'd expect:
 confining RoPE to short local
 windows and letting position-free (NoPE) layers do the long-range content lookup
 makes retrieval length-agnostic, whereas RoPE alone cannot extrapolate to unseen
 positions.
+
+`hybrid_square_kda` lands in between: swapping the RoPE windows for KDA keeps it
+out of the collapsed class (perfect retrieval to n=24, still ~75% at n=256), but
+it does not match the window it replaced. A W=10 window computes the identical
+function at every context length, while KDA is only approximately local: its
+learned decay gates were trained on 128-token sequences, and its fixed-size
+recurrent state degrades where the window's exact locality does not. (Single
+seed.)
 
 ![retrieval accuracy vs context length](figures/fig_generalization.png)
 
@@ -80,7 +98,7 @@ positions.
 ## Running it
 
 ```bash
-# train the 8 variants: seed 0 everywhere, except the plain hybrid which
+# train the 9 variants: seed 0 everywhere, except the plain hybrid which
 # needs seed 1 (with seed 0 it plateaus on a partial positional shortcut)
 python -m kvbench.train --compile --exclude hybrid
 python -m kvbench.train --compile --only hybrid --seed 1

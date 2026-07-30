@@ -1,5 +1,7 @@
 __pycache__/
-runs/
+# keep the small training logs (metrics.jsonl, eval.json, accuracy_vs_context.json)
+# under version control; ignore only the heavy checkpoints
+runs/*/checkpoints/
 *.pt
 *.log
 .DS_Store

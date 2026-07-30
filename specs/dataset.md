@@ -4,7 +4,7 @@
 
 **Parameters:** key length `k = 3`, value length `v = 3`.
 
-**Entry:** `StartKey <k digits> StartValue <v digits>` — 8 tokens.
+**Entry:** `StartKey <k digits> StartValue <v digits>` (8 tokens).
 
 **Sequence:** a sequence of `n_entries` entries is built from `n_entries / 2`
 distinct keys, each with an independently random value. Every key-value pair

@@ -19,11 +19,11 @@ retrieval on a partial positional shortcut; seed 1 reaches ≈100%).
 `n = 6` until 2500, then `n = 8` for the rest. Without the curriculum, every
 variant whose RoPE layers see full attention (rope, partial_rope, the no-window
 hybrids) falls into a positional-shortcut local optimum and plateaus at ~37%
-exact-match retrieval *at the training length*; starting at `n = 2` — where no
-positional shortcut exists — lets the content-based match circuit form first, and
+exact-match retrieval *at the training length*; starting at `n = 2` (where no
+positional shortcut exists) lets the content-based match circuit form first, and
 all variants then reach ≈100% at `n = 8` (rope, the slowest, needs the full 15k
-steps: 99.9%). The windowed hybrids are unaffected — they learn the task with or
+steps: 99.9%). The windowed hybrids are unaffected; they learn the task with or
 without the curriculum.
 
-**Logging:** every 100 steps — loss and second-occurrence retrieval accuracy
+**Logging:** every 100 steps: loss and second-occurrence retrieval accuracy
 (per-digit). **Checkpoints + per-index eval:** every 1000 steps.
