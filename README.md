@@ -5,6 +5,10 @@ context far longer than it was trained on?** This benchmark trains 9 architectur
 variants on a synthetic key-value lookup task and measures how retrieval accuracy
 holds up as the context grows to 32× the training length.
 
+Full writeup: [*Taking Attention Out of Context: Windowed RoPE, NoPE Retrieval,
+and Squared Logits for 32× Length Generalization*](paper/main.pdf) (preprint,
+PDF in this repo).
+
 ## The result
 
 **Only the hybrid variants with a sliding window generalize.** The best,
