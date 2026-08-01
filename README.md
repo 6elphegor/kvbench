@@ -5,6 +5,33 @@ context far longer than it was trained on?** This benchmark trains 9 architectur
 variants on a synthetic key-value lookup task and measures how retrieval accuracy
 holds up as the context grows to 32× the training length.
 
+## The result
+
+**Only the hybrid variants with a sliding window generalize.** The best,
+`hybrid_square` (alternating local-RoPE / global-NoPE attention with squared
+attention scores), holds **~99.9% exact-match retrieval all the way out to n=256**
+(32× the training length); the plain `hybrid` decays slowly, from ~100% to ~94%
+over the same range. Every other variant (plain RoPE, partial RoPE, and the
+window-free hybrids) collapses to ~0 as the context grows. The sliding window is
+essential: `hybrid_nowindow` is no better than plain RoPE. The mechanism is what
+you'd expect: confining RoPE to short local windows and letting position-free
+(NoPE) layers do the long-range content lookup makes retrieval length-agnostic,
+whereas RoPE alone cannot extrapolate to unseen positions.
+
+`hybrid_square_kda` lands in between: swapping the RoPE windows for KDA keeps it
+out of the collapsed class (perfect retrieval to n=24, still ~75% at n=256), but
+it does not match the window it replaced. A W=10 window computes the identical
+function at every context length, while KDA is only approximately local: its
+learned decay gates were trained on 128-token sequences, and its fixed-size
+recurrent state degrades where the window's exact locality does not. (Single
+seed.)
+
+![retrieval accuracy vs context length](figures/fig_generalization.png)
+
+![per-position cross-entropy](figures/fig_per_index_ce.png)
+
+The task, the variant grid, and the squared-scores trick are described below.
+
 ## The task
 
 Each sequence is a list of entries `StartKey <k digits> StartValue <v digits>`.
@@ -69,31 +96,6 @@ article linked in an X post. However, this attention correction on its own is on
 part of the solution to context length generalization. Without correctly handling
 the position embeddings, models still will not generalize to context lengths longer
 than what is encountered during training.
-
-## The result
-
-**Only the hybrid variants with a sliding window generalize.** The best,
-`hybrid_square`, holds ~99.9% exact-match retrieval all the way out to n=256 (32× the
-training length); the plain `hybrid` decays slowly, from ~100% to ~94% over the same
-range. Every other variant (plain RoPE, partial RoPE, and the window-free hybrids)
-collapses to ~0 as the context grows. The sliding window is essential:
-`hybrid_nowindow` is no better than plain RoPE. The mechanism is what you'd expect:
-confining RoPE to short local
-windows and letting position-free (NoPE) layers do the long-range content lookup
-makes retrieval length-agnostic, whereas RoPE alone cannot extrapolate to unseen
-positions.
-
-`hybrid_square_kda` lands in between: swapping the RoPE windows for KDA keeps it
-out of the collapsed class (perfect retrieval to n=24, still ~75% at n=256), but
-it does not match the window it replaced. A W=10 window computes the identical
-function at every context length, while KDA is only approximately local: its
-learned decay gates were trained on 128-token sequences, and its fixed-size
-recurrent state degrades where the window's exact locality does not. (Single
-seed.)
-
-![retrieval accuracy vs context length](figures/fig_generalization.png)
-
-![per-position cross-entropy](figures/fig_per_index_ce.png)
 
 ## Running it
 
