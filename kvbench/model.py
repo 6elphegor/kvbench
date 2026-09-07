@@ -12,7 +12,11 @@ their attention layers:
 layers; `rope`/`partial_rope` variants apply the same attention in every layer.
 The `hybrid_square_kda` variant keeps the winning layout but replaces the local
 RoPE window layers with Kimi Delta Attention (see `KDA`). Each variant has
-8 attention + 8 FFN layers.
+2*BLOCKS attention + 2*BLOCKS FFN layers (8 + 8 by default).
+
+Under `config.ULTRA` the attention layers run through the fused flex-attention
+path in `longctx.py` (O(T) memory, no [T,T] buffers); the dense path below is
+the base benchmark.
 """
 import math
 
@@ -41,8 +45,12 @@ class Attention(torch.nn.Module):
         self.Wk = torch.nn.Linear(C.D, C.KV * C.DK, bias=False)
         self.Wv = torch.nn.Linear(C.D, C.KV * C.DK, bias=False)
         self.Wo = torch.nn.Linear(C.D, C.D, bias=False)
+        self.drop = torch.nn.Dropout(C.DROPOUT)
 
     def forward(self, x, cos, sin, mask):
+        if C.ULTRA:                      # O(T)-memory fused path (longctx.py)
+            from .longctx import flex_forward
+            return flex_forward(self, x)
         B, T, _ = x.shape
         h = self.norm(x)
         q = self.Wq(h).view(B, T, C.H, C.DK)
@@ -64,7 +72,7 @@ class Attention(torch.nn.Module):
         scores = scores.masked_fill(~mask[:T, :T], float("-inf"))
         out = torch.softmax(scores, dim=-1) @ v
         out = out.transpose(1, 2).reshape(B, T, C.D)
-        return self.Wo(out)
+        return self.drop(self.Wo(out))
 
 
 class KDA(torch.nn.Module):
@@ -183,10 +191,11 @@ class FFN(torch.nn.Module):
         self.Wg = torch.nn.Linear(C.D, hidden, bias=False)
         self.Wu = torch.nn.Linear(C.D, hidden, bias=False)
         self.Wd = torch.nn.Linear(hidden, C.D, bias=False)
+        self.drop = torch.nn.Dropout(C.DROPOUT)
 
     def forward(self, x):
         h = self.norm(x)
-        return self.Wd(F.silu(self.Wg(h)) * self.Wu(h))
+        return self.drop(self.Wd(F.silu(self.Wg(h)) * self.Wu(h)))
 
 
 def _rope_tables(rope_dims, max_t, device):
@@ -218,10 +227,13 @@ class Model(torch.nn.Module):
             if spec[0] == "attn":
                 _, rope_frac, window, square = spec
                 layer = Attention(rope_frac, window, square)
-                cos, sin = _rope_tables(layer.rope_dims, max_t, C.DEVICE)
-                layer.register_buffer("cos", cos, persistent=False)
-                layer.register_buffer("sin", sin, persistent=False)
-                layer.register_buffer("mask", _causal_mask(window, max_t, C.DEVICE), persistent=False)
+                if C.ULTRA:              # flex path needs no [T,T] buffers
+                    layer.cos = layer.sin = layer.mask = None
+                else:
+                    cos, sin = _rope_tables(layer.rope_dims, max_t, C.DEVICE)
+                    layer.register_buffer("cos", cos, persistent=False)
+                    layer.register_buffer("sin", sin, persistent=False)
+                    layer.register_buffer("mask", _causal_mask(window, max_t, C.DEVICE), persistent=False)
                 self.layers.append(layer)
             elif spec[0] == "kda":
                 self.layers.append(KDA())
@@ -230,6 +242,8 @@ class Model(torch.nn.Module):
 
     def set_max_entries(self, max_entries):
         """Re-precompute rope/mask buffers so eval can exceed the training length."""
+        if C.ULTRA:                      # flex path has no length-bound buffers
+            return
         max_t = C.ENTRY * max_entries
         for layer in self.layers:
             if isinstance(layer, Attention):
@@ -254,25 +268,30 @@ def _attn(rope_frac, window, square):
 _FFN = ("ffn",)
 
 def _uniform(rope_frac, square):
-    return [s for _ in range(8) for s in (_attn(rope_frac, None, square), _FFN)]
+    return [s for _ in range(2 * C.BLOCKS) for s in (_attn(rope_frac, None, square), _FFN)]
 
 def _hybrid(window, square):
-    return [s for _ in range(4) for s in
+    return [s for _ in range(C.BLOCKS) for s in
             (_attn(1.0, window, square), _FFN, _attn(0.0, None, square), _FFN)]
 
 def _hybrid_kda(square):
     # the hybrid layout with KDA in place of the local RoPE window layers
-    return [s for _ in range(4) for s in
+    return [s for _ in range(C.BLOCKS) for s in
             (("kda",), _FFN, _attn(0.0, None, square), _FFN)]
 
-VARIANTS = {
-    "rope":                    _uniform(1.0, False),
-    "rope_square":             _uniform(1.0, True),
-    "partial_rope":            _uniform(0.5, False),
-    "partial_rope_square":     _uniform(0.5, True),
-    "hybrid":                  _hybrid(C.WINDOW, False),
-    "hybrid_square":           _hybrid(C.WINDOW, True),
-    "hybrid_nowindow":         _hybrid(None, False),
-    "hybrid_square_nowindow":  _hybrid(None, True),
-    "hybrid_square_kda":       _hybrid_kda(True),
-}
+def _build_variants():
+    # rebuilt in place by config.set_model / config.apply_ultra, which change
+    # BLOCKS / WINDOW after this module was imported
+    return {
+        "rope":                    _uniform(1.0, False),
+        "rope_square":             _uniform(1.0, True),
+        "partial_rope":            _uniform(0.5, False),
+        "partial_rope_square":     _uniform(0.5, True),
+        "hybrid":                  _hybrid(C.WINDOW, False),
+        "hybrid_square":           _hybrid(C.WINDOW, True),
+        "hybrid_nowindow":         _hybrid(None, False),
+        "hybrid_square_nowindow":  _hybrid(None, True),
+        "hybrid_square_kda":       _hybrid_kda(True),
+    }
+
+VARIANTS = _build_variants()

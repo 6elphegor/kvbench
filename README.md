@@ -1,47 +1,75 @@
 # Key–Value Retrieval: Context-Length Generalization
 
-Which attention design lets a small transformer **retrieve a stored value from a
-context far longer than it was trained on?** This benchmark trains 9 architecture
-variants on a synthetic key-value lookup task and measures how retrieval accuracy
+Which attention design lets a small transformer retrieve a stored value from a
+context far longer than it was trained on? This benchmark trains 9 architecture
+variants on a synthetic key-value lookup task (needle in a haystack) and measures how retrieval accuracy
 holds up as the context grows to 32× the training length.
-
-Full writeup: [*Taking Attention Out of Context: Windowed RoPE, NoPE Retrieval,
-and Squared Logits for 32× Length Generalization*](paper/main.pdf) (preprint,
-PDF in this repo).
 
 ## The result
 
-**Only the hybrid variants with a sliding window generalize.** The best,
-`hybrid_square` (alternating local-RoPE / global-NoPE attention with squared
-attention scores), holds **~99.9% exact-match retrieval all the way out to n=256**
-(32× the training length); the plain `hybrid` decays slowly, from ~100% to ~94%
-over the same range. Every other variant (plain RoPE, partial RoPE, and the
-window-free hybrids) collapses to ~0 as the context grows. The sliding window is
-essential: `hybrid_nowindow` is no better than plain RoPE. The mechanism is what
-you'd expect: confining RoPE to short local windows and letting position-free
-(NoPE) layers do the long-range content lookup makes retrieval length-agnostic,
-whereas RoPE alone cannot extrapolate to unseen positions.
+![retrieval accuracy vs context length](figures/scale.png)
 
-`hybrid_square_kda` lands in between: swapping the RoPE windows for KDA keeps it
-out of the collapsed class (perfect retrieval to n=24, still ~75% at n=256), but
-it does not match the window it replaced. A W=10 window computes the identical
-function at every context length, while KDA is only approximately local: its
-learned decay gates were trained on 128-token sequences, and its fixed-size
-recurrent state degrades where the window's exact locality does not. (Single
-seed.)
+Hybrid square, the best variant, achieved 98.9% accuracy on needle in a haystack at a 10 million token context despite only having been trained up to a context of ~200k tokens, a context length extrapolation of ~50x.
+
+Hyperparameters of the long ctx run
+
+| Param | Value |
+| :---     | :---:    
+| d_model     | 256   
+| heads    | 4 x 64
+| blocks   | 8 (16 sliding/global attention)
+| ffn hidden | 1024
+| dropout | 0.1
+
+Training command
+```bash
+python -m kvbench.train \
+    --ultra \
+    --steps 100000 \
+    --rung-acc 1.0 \
+    --rung-cap 0 \
+    --dim 256 \
+    --heads 4 \
+    --blocks 8 \
+    --dropout 0.1 \
+    --mutant-j 7 \
+    --mutant-mix 0.5 \
+    --only hybrid_square \
+    --runs-dir runs/ultra_dropout_b8
+```
+early stopped at step 2800
+
+Evaluation sweep out to 10M tokens (writes `runs/ultra_dropout_b8/accuracy_vs_context_ultra.json`)
+```bash
+python -m kvbench.eval_ultra \
+    --runs-dir runs/ultra_dropout_b8 \
+    --variants hybrid_square \
+    --dim 256 \
+    --heads 4 \
+    --blocks 8
+```
 
 ![retrieval accuracy vs context length](figures/fig_generalization.png)
 
-![per-position cross-entropy](figures/fig_per_index_ce.png)
+Hybrid square demonstrates strong context length generalization even at very small scales with a 99.9% retrieval accuracy at 4096 token contexts (256 unique keys) while only having been trained at 128 token contexts (8 unique keys), an extrapolation of 32x. Plain hybrid and KDA hybrid square trail at 94.2% and 75% accuracies, respectively, at 256 keys ctx. All other variants collapse by the end.
 
-The task, the variant grid, and the squared-scores trick are described below.
+| variant | n=8 | n=16 | n=32 | n=64 | n=128 | n=256 |
+|---|---|---|---|---|---|---|
+| `rope` | 99.7 | 41.0 | 9.4 | 2.3 | 0.6 | 0.3 |
+| `rope_square` | 100.0 | 96.6 | 63.9 | 28.4 | 11.5 | 3.6 |
+| `partial_rope` | 100.0 | 64.7 | 22.8 | 5.9 | 1.4 | 0.5 |
+| `partial_rope_square` | 100.0 | 95.1 | 55.6 | 16.5 | 4.2 | 1.2 |
+| `hybrid` | 100.0 | 100.0 | 99.8 | 99.6 | 98.6 | 94.2 |
+| **`hybrid_square`** | 100.0 | 100.0 | 100.0 | 100.0 | 100.0 | **99.9** |
+| `hybrid_nowindow` | 100.0 | 98.7 | 71.6 | 21.4 | 5.8 | 1.5 |
+| `hybrid_square_nowindow` | 100.0 | 99.7 | 60.7 | 18.2 | 4.7 | 1.5 |
+| `hybrid_square_kda` | 100.0 | 100.0 | 99.8 | 97.8 | 90.1 | 75.0 |
 
 ## The task
 
 Each sequence is a list of entries `StartKey <k digits> StartValue <v digits>`.
-Every key appears **exactly twice with the same value**; the entries are shuffled.
-The model is trained to predict the value on the **second** occurrence of a key:
-a pure in-context lookup. The first occurrence is unpredictable and excluded from
+Every key appears exactly twice with the same value; the entries are shuffled.
+The model is trained to predict the value on the second occurrence of a key, a pure in-context lookup. The first occurrence is unpredictable and excluded from
 the loss.
 
 - vocabulary: digits `0–9` + `StartKey` + `StartValue` (12 tokens)
@@ -56,50 +84,72 @@ All share a standard backbone (default init, learnable `LayerNorm` without bias,
 plain residuals, SwiGLU FFN, RoPE, GQA/MHA) at `d_model=128`, 8 attention + 8 FFN
 layers (~2.1M params). They differ only in the attention layers:
 
+The variants span positional encoding (RoPE/NoPE), sliding window, squared attention scores. One variant replaces sliding window with kimi delta attention layers, making 9 variants total.
+
 | variant | positional encoding | window | squared scores |
 |---|---|---|---|
 | `rope` / `rope_square` | full RoPE, every layer | none | no / yes |
 | `partial_rope` / `partial_rope_square` | RoPE on half of each head's dims | none | no / yes |
 | `hybrid` / `hybrid_square` | alternating local-RoPE / global-NoPE | W=10 | no / yes |
 | `hybrid_nowindow` / `hybrid_square_nowindow` | alternating local-RoPE / global-NoPE | none | no / yes |
-| `hybrid_square_kda` | alternating KDA / global-NoPE | none | yes (NoPE layers) |
+| `hybrid_square_kda` | alternating KDA / global-NoPE | none (KDA is the local memory) | yes (NoPE layers) |
 
 `hybrid_square_kda` is the winning `hybrid_square` layout with the local RoPE
-window layers replaced by **Kimi Delta Attention** as used in Kimi K3
+window layers replaced by Kimi Delta Attention as used in Kimi K3
 (introduced in [Kimi Linear, arXiv:2510.26692](https://arxiv.org/abs/2510.26692);
 K3 tech report §2.1.1, including K3's lower-bounded decay and full-rank output
-gate): a gated DeltaNet with per-channel decay, implemented with the
+gate), a gated DeltaNet with per-channel decay, implemented with the
 chunkwise-parallel scan. Like a sliding window, KDA is a fading local
 memory with no length-dependent state, but learned, content-addressed, and
 softmax-free.
 
 ## Why squared attention scores
 
-Standard attention does not scale. As context length grows, attention becomes
-increasingly diffuse and waters down the desired value signal. The solution is to
-square the attention scores before softmax. The power of 2 of attention scores is
-the critical point of stability. Less than 2, and attention grows diffuse. Greater
-than 2, and attention spikes as context grows.
+Intuitively, the power of 2 is the critical point for attention scores, where positive powers below 2 lead to dilution and powers above 2 lead to one-hot attention.
 
-This can be seen by analyzing the value variance as the context length grows.
-Assume the keys, queries, and values are distributed according to the standard
-normal distribution. The resulting attention scores are then standard normally
-distributed because of the scale factor used in attention. The following graph
-shows how the value variance changes as the context length grows depending on the
-operation applied to the attention scores. The value variance of None decays
-rapidly (diffuse), Cubed approaches 1 (spikes), but Squared remains stable between
-0 and 1.
+$$
+E\left[e^{|x|^p}\right]
+$$
+
+where $x$ is standard normal distributed is finite for $0 < p < 2$, but becomes infinite at $p = 2$. Despite the expectation of the exponentiated score being infinite, the value component variance for $p = 2$ is stable.
+Suppose that the query, key, and value vector components throughout a randomly initialized model are distributed according to the standard normal distribution.
+Let $q, k_i, v_i \in \mathbb{R}^d$ and define the scaled dot-product score
+
+$$
+s_i = \frac{q \cdot k_i}{\sqrt{d}} \approx \mathcal{N}(0, 1).
+$$
+
+The attention weights are the softmax of the scores,
+
+$$
+\alpha_i = \frac{e^{s_i}}{\sum_{j=1}^{n} e^{s_j}},
+$$
+
+the attention output is
+
+$$
+o = \sum_{i=1}^{n} \alpha_i v_i
+$$
+
+With the further approximation that the attention scores are independent (approximately true for sufficiently high dimensions) the variance of each output component is the same as
+
+$$
+\mathrm{Var}(o_j) = \mathrm{Var}(s \cdot z), \qquad s = \mathrm{softmax}(x), \quad x, z \sim \mathcal{N}(0, I_n)
+$$
+
+Graphing that along with variants that use squared and cubed attention scores
 
 ![Variance of softmax-weighted sum](figures/softmax_weighted_sum_cubed.png)
 
-This figure is produced by `softmax_weighted_sum_cubed.py` (`python
-softmax_weighted_sum_cubed.py`).
+This figure is produced by `softmax_weighted_sum_cubed.py` (`python softmax_weighted_sum_cubed.py`).
+The raw variant suffers from variance dilution. As context length grows, attention becomes increasingly diffuse and waters down the desired value signal. The cubed variant becomes one-hot like, essentially picking out a single value. The squared score variant is the only one that preserves variance as context scales.
+Graphing the variance in a more realistic setting with the independence assumptions relaxed
 
-I cannot claim complete credit for squared-logit attention as I encountered it in an
-article linked in an X post. However, this attention correction on its own is only
-part of the solution to context length generalization. Without correctly handling
-the position embeddings, models still will not generalize to context lengths longer
-than what is encountered during training.
+![Attention output variance](figures/attention_output_variance.png)
+
+the overall picture is similar with the cubed going one-hot and the squared scores staying stable, but the raw variant decays to around $1/d$ instead of $1/n$.
+
+This attention correction alone is insufficient for strong context length generalization as other aspects can also bottleneck. Global RoPE layers do not generalize on the needle in a haystack task even with squared score attention. Global KDA layers interleaved with global squared score NoPE layers also suffer decay, though less rapid than most other variants. Context length generalization will be limited by the worst bottleneck.
 
 ## Running it
 
